@@ -35,8 +35,6 @@ class SearchProvider:
             if not title:
                 continue
 
-            if not _matches_role(title, role_query):
-                continue
             if _contains_block_term(title, self.settings.blocked_terms):
                 continue
 
@@ -114,28 +112,6 @@ def _strip_linkedin_suffix(title: str) -> str:
     if title.endswith(suffix):
         return title[: -len(suffix)].strip()
     return title
-
-
-def _matches_role(title: str, role_query: str) -> bool:
-    title_l = title.lower()
-    query_l = role_query.lower().strip()
-    if query_l in title_l:
-        return True
-
-    # Common hiring shorthand on LinkedIn posts.
-    if query_l == "senior product manager":
-        return bool(re.search(r"\b(sr|senior)\b.*\b(pm|product manager)\b", title_l))
-    if query_l == "product manager":
-        return bool(re.search(r"\b(product manager|pm)\b", title_l))
-    if query_l == "product marketing manager":
-        return bool(re.search(r"\b(product marketing manager|pmm)\b", title_l))
-    if query_l == "program manager":
-        return bool(re.search(r"\b(program manager|pgm)\b", title_l))
-
-    # Generic fallback: at least two query words should appear in title.
-    words = [w for w in re.split(r"\W+", query_l) if w]
-    hits = sum(1 for w in set(words) if w in title_l)
-    return hits >= 2
 
 
 def _contains_block_term(title: str, blocked_terms: list[str]) -> bool:

@@ -56,6 +56,9 @@ class CollectorService:
                         days_back,
                     )
                     rows = self.search.fetch(query, days_back=days_back, location=location)
+                    if not rows and location.strip():
+                        # If location-qualified search is too sparse, retry without location.
+                        rows = self.search.fetch(query, days_back=days_back, location=None)
                     aggregated.extend(rows)
                     logger.info(
                         "collector.query.done query=%s location=%s rows=%s",
