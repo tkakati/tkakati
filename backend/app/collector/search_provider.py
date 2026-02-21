@@ -20,44 +20,45 @@ class SearchProvider:
         self.company_extractor = CompanyExtractor(settings)
 
     def fetch(self, role_query: str, *, days_back: int | None = None, location: str | None = None) -> list[dict]:
-        search_query = self._build_search_query(role_query, location=location)
-        payload = self._fetch_html(search_query, days_back=days_back)
-
         now = datetime.now(tz=UTC)
         max_days = days_back if days_back is not None else self.settings.collector_days_back
         results: list[dict] = []
+        seen_urls: set[str] = set()
 
-        for hit in _parse_duckduckgo_results(payload):
-            title = hit["title"]
-            link = hit["url"]
-            description = hit["snippet"]
+        for search_query in self._build_search_queries(role_query, location=location):
+            payload = self._fetch_html(search_query, days_back=days_back)
+            for hit in _parse_duckduckgo_results(payload):
+                title = hit["title"]
+                link = hit["url"]
+                description = hit["snippet"]
 
-            if _contains_block_term(title, self.settings.blocked_terms):
-                continue
-            if not _is_hiring_language(f"{title} {description}", self.settings.hiring_terms):
-                continue
-            if "linkedin.com" not in urlparse(link).netloc.lower():
-                continue
+                if not link or link in seen_urls:
+                    continue
+                if _contains_block_term(title, self.settings.blocked_terms):
+                    continue
+                if "linkedin.com" not in urlparse(link).netloc.lower():
+                    continue
 
-            # DDG results don't provide a reliable publish date per hit.
-            first_seen = now
-            if (now - first_seen).days > max_days:
-                continue
+                # DDG results don't provide a reliable publish date per hit.
+                first_seen = now
+                if (now - first_seen).days > max_days:
+                    continue
 
-            normalized_title = _strip_linkedin_suffix(title)
-            metadata = self.company_extractor.extract_metadata(normalized_title, link, description)
-            results.append(
-                {
-                    "post_url": link,
-                    "title": normalized_title,
-                    "company": metadata.company or None,
-                    "seniority": metadata.seniority or None,
-                    "location": metadata.location or None,
-                    "remote": metadata.remote,
-                    "query_used": role_query,
-                    "first_seen": first_seen,
-                }
-            )
+                normalized_title = _strip_linkedin_suffix(title)
+                metadata = self.company_extractor.extract_metadata(normalized_title, link, description)
+                results.append(
+                    {
+                        "post_url": link,
+                        "title": normalized_title,
+                        "company": metadata.company or None,
+                        "seniority": metadata.seniority or None,
+                        "location": metadata.location or None,
+                        "remote": metadata.remote,
+                        "query_used": role_query,
+                        "first_seen": first_seen,
+                    }
+                )
+                seen_urls.add(link)
 
         return results
 
@@ -76,16 +77,30 @@ class SearchProvider:
                         "kl": "us-en",
                         "df": _ddg_date_filter(days_back if days_back is not None else self.settings.collector_days_back),
                     }
-                    response = client.get(self.BASE_URL, params=params)
+                    response = client.get(
+                        self.BASE_URL,
+                        params=params,
+                        headers={
+                            "User-Agent": (
+                                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/123.0.0.0 Safari/537.36"
+                            )
+                        },
+                    )
                     response.raise_for_status()
                     content = response.text
         return content
 
-    def _build_search_query(self, role_query: str, *, location: str | None = None) -> str:
-        hiring = " OR ".join(f'"{term}"' for term in self.settings.hiring_terms)
-        if location and location.strip():
-            return f'site:linkedin.com/posts ({hiring}) "{role_query}" "{location.strip()}"'
-        return f'site:linkedin.com/posts ({hiring}) "{role_query}"'
+    def _build_search_queries(self, role_query: str, *, location: str | None = None) -> list[str]:
+        queries: list[str] = []
+        location_part = f' "{location.strip()}"' if location and location.strip() else ""
+        # Keep searches broad enough to avoid empty result sets.
+        queries.append(f'site:linkedin.com/posts "{role_query}" hiring{location_part}')
+        queries.append(f'site:linkedin.com "{role_query}" hiring{location_part}')
+        queries.append(f'site:linkedin.com/posts "{role_query}"{location_part}')
+        queries.append(f'site:linkedin.com "{role_query}"{location_part}')
+        return queries
 
 
 def _strip_linkedin_suffix(title: str) -> str:
@@ -100,11 +115,6 @@ def _contains_block_term(text: str, blocked_terms: list[str]) -> bool:
     return any(term in lowered for term in blocked_terms)
 
 
-def _is_hiring_language(text: str, hiring_terms: list[str]) -> bool:
-    lowered = text.lower()
-    return any(term in lowered for term in hiring_terms)
-
-
 def _ddg_date_filter(days_back: int) -> str:
     if days_back <= 1:
         return "d"
@@ -117,32 +127,42 @@ def _ddg_date_filter(days_back: int) -> str:
 
 def _parse_duckduckgo_results(payload: str) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
-    # DuckDuckGo HTML endpoint render.
-    pattern = re.compile(
-        r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+
+    # Preferred selector when DDG serves classic markup.
+    strict_pattern = re.compile(
+        r'<a[^>]*class=(?:"[^"]*result__a[^"]*"|\'[^\']*result__a[^\']*\')[^>]*href=(?:"([^"]+)"|\'([^\']+)\')[^>]*>(.*?)</a>',
         re.IGNORECASE | re.DOTALL,
     )
-    for match in pattern.finditer(payload):
-        href_raw = unescape(match.group(1)).strip()
-        title_html = match.group(2)
-        title = _strip_tags(unescape(title_html)).strip()
-        if not title:
-            continue
-        url = _resolve_duckduckgo_href(href_raw)
-        if not url:
-            continue
+    # Fallback selector when class names/layout differ.
+    loose_pattern = re.compile(
+        r'<a[^>]*href=(?:"([^"]+)"|\'([^\']+)\')[^>]*>(.*?)</a>',
+        re.IGNORECASE | re.DOTALL,
+    )
 
-        snippet = ""
-        tail = payload[match.end() : match.end() + 1400]
-        snippet_match = re.search(
-            r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</',
-            tail,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if snippet_match:
-            snippet = _strip_tags(unescape(snippet_match.group(1))).strip()
+    for pattern in (strict_pattern, loose_pattern):
+        for match in pattern.finditer(payload):
+            href_raw = unescape((match.group(1) or match.group(2) or "").strip())
+            if not href_raw:
+                continue
+            title = _strip_tags(unescape(match.group(3))).strip()
+            if not title or len(title) < 3:
+                continue
 
-        results.append({"url": url, "title": title, "snippet": snippet})
+            url = _resolve_duckduckgo_href(href_raw)
+            if not url:
+                continue
+
+            snippet = ""
+            tail = payload[match.end() : match.end() + 1400]
+            snippet_match = re.search(
+                r'class=(?:"[^"]*result__snippet[^"]*"|\'[^\']*result__snippet[^\']*\')[^>]*>(.*?)</',
+                tail,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if snippet_match:
+                snippet = _strip_tags(unescape(snippet_match.group(1))).strip()
+
+            results.append({"url": url, "title": title, "snippet": snippet})
     return results
 
 
