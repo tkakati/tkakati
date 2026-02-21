@@ -31,10 +31,6 @@ class SearchProvider:
         root = ET.fromstring(payload)
 
         for item in root.findall("./channel/item"):
-            source = (item.findtext("source") or "").strip().lower()
-            if source != "linkedin":
-                continue
-
             title = unescape((item.findtext("title") or "").strip())
             if not title:
                 continue
@@ -123,7 +119,25 @@ def _strip_linkedin_suffix(title: str) -> str:
 
 
 def _matches_role(title: str, role_query: str) -> bool:
-    return role_query.lower() in title.lower()
+    title_l = title.lower()
+    query_l = role_query.lower().strip()
+    if query_l in title_l:
+        return True
+
+    # Common hiring shorthand on LinkedIn posts.
+    if query_l == "senior product manager":
+        return bool(re.search(r"\b(sr|senior)\b.*\b(pm|product manager)\b", title_l))
+    if query_l == "product manager":
+        return bool(re.search(r"\b(product manager|pm)\b", title_l))
+    if query_l == "product marketing manager":
+        return bool(re.search(r"\b(product marketing manager|pmm)\b", title_l))
+    if query_l == "program manager":
+        return bool(re.search(r"\b(program manager|pgm)\b", title_l))
+
+    # Generic fallback: at least two query words should appear in title.
+    words = [w for w in re.split(r"\W+", query_l) if w]
+    hits = sum(1 for w in set(words) if w in title_l)
+    return hits >= 2
 
 
 def _is_hiring_language(title: str, hiring_terms: list[str]) -> bool:
