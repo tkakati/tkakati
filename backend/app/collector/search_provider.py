@@ -37,8 +37,6 @@ class SearchProvider:
 
             if not _matches_role(title, role_query):
                 continue
-            if not _is_hiring_language(title, self.settings.hiring_terms):
-                continue
             if _contains_block_term(title, self.settings.blocked_terms):
                 continue
 
@@ -138,11 +136,6 @@ def _matches_role(title: str, role_query: str) -> bool:
     words = [w for w in re.split(r"\W+", query_l) if w]
     hits = sum(1 for w in set(words) if w in title_l)
     return hits >= 2
-
-
-def _is_hiring_language(title: str, hiring_terms: list[str]) -> bool:
-    lowered = title.lower()
-    return any(term in lowered for term in hiring_terms)
 
 
 def _contains_block_term(title: str, blocked_terms: list[str]) -> bool:
