@@ -1,9 +1,7 @@
 from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from html import unescape
 import re
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
-import xml.etree.ElementTree as ET
 
 import httpx
 from tenacity import Retrying, stop_after_attempt, wait_exponential
@@ -13,9 +11,9 @@ from app.config import Settings
 
 
 class SearchProvider:
-    """Collect LinkedIn hiring post candidates from Google News RSS search."""
+    """Collect LinkedIn hiring post candidates from DuckDuckGo web search."""
 
-    BASE_URL = "https://news.google.com/rss/search"
+    BASE_URL = "https://html.duckduckgo.com/html/"
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -23,29 +21,26 @@ class SearchProvider:
 
     def fetch(self, role_query: str, *, days_back: int | None = None, location: str | None = None) -> list[dict]:
         search_query = self._build_search_query(role_query, location=location)
-        payload = self._fetch_rss(search_query)
+        payload = self._fetch_html(search_query, days_back=days_back)
 
         now = datetime.now(tz=UTC)
         max_days = days_back if days_back is not None else self.settings.collector_days_back
         results: list[dict] = []
-        root = ET.fromstring(payload)
 
-        for item in root.findall("./channel/item"):
-            title = unescape((item.findtext("title") or "").strip())
-            if not title:
-                continue
+        for hit in _parse_duckduckgo_results(payload):
+            title = hit["title"]
+            link = hit["url"]
+            description = hit["snippet"]
 
             if _contains_block_term(title, self.settings.blocked_terms):
                 continue
-
-            link = _extract_linkedin_url(item)
-            if not link:
+            if not _is_hiring_language(f"{title} {description}", self.settings.hiring_terms):
                 continue
-            description = _description_text(item)
-
-            first_seen = _parse_pub_date(item.findtext("pubDate"))
-            if first_seen is None:
+            if "linkedin.com" not in urlparse(link).netloc.lower():
                 continue
+
+            # DDG results don't provide a reliable publish date per hit.
+            first_seen = now
             if (now - first_seen).days > max_days:
                 continue
 
@@ -66,7 +61,7 @@ class SearchProvider:
 
         return results
 
-    def _fetch_rss(self, search_query: str) -> str:
+    def _fetch_html(self, search_query: str, *, days_back: int | None = None) -> str:
         retries = max(1, self.settings.collector_max_retries)
         content = ""
         for attempt in Retrying(
@@ -78,12 +73,10 @@ class SearchProvider:
                 with httpx.Client(timeout=self.settings.collector_timeout_seconds) as client:
                     params = {
                         "q": search_query,
-                        "hl": "en-US",
-                        "gl": "US",
-                        "ceid": "US:en",
+                        "kl": "us-en",
+                        "df": _ddg_date_filter(days_back if days_back is not None else self.settings.collector_days_back),
                     }
-                    url = f"{self.BASE_URL}?{urlencode(params)}"
-                    response = client.get(url)
+                    response = client.get(self.BASE_URL, params=params)
                     response.raise_for_status()
                     content = response.text
         return content
@@ -95,18 +88,6 @@ class SearchProvider:
         return f'site:linkedin.com/posts ({hiring}) "{role_query}"'
 
 
-def _parse_pub_date(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
-
-
 def _strip_linkedin_suffix(title: str) -> str:
     suffix = " - LinkedIn"
     if title.endswith(suffix):
@@ -114,56 +95,69 @@ def _strip_linkedin_suffix(title: str) -> str:
     return title
 
 
-def _contains_block_term(title: str, blocked_terms: list[str]) -> bool:
-    lowered = title.lower()
+def _contains_block_term(text: str, blocked_terms: list[str]) -> bool:
+    lowered = text.lower()
     return any(term in lowered for term in blocked_terms)
 
 
-LINKEDIN_URL_RE = re.compile(r"https?://(?:[\w-]+\.)?linkedin\.com/[^\s\"'<>]+", re.IGNORECASE)
+def _is_hiring_language(text: str, hiring_terms: list[str]) -> bool:
+    lowered = text.lower()
+    return any(term in lowered for term in hiring_terms)
 
 
-def _extract_linkedin_url(item: ET.Element) -> str | None:
-    direct_link = (item.findtext("link") or "").strip()
-    candidate = _extract_linkedin_from_text(direct_link)
-    if candidate:
-        return candidate
-
-    description = item.findtext("description") or ""
-    candidate = _extract_linkedin_from_text(unescape(description))
-    if candidate:
-        return candidate
-
-    guid = item.findtext("guid") or ""
-    candidate = _extract_linkedin_from_text(guid)
-    if candidate:
-        return candidate
-    return None
+def _ddg_date_filter(days_back: int) -> str:
+    if days_back <= 1:
+        return "d"
+    if days_back <= 7:
+        return "w"
+    if days_back <= 31:
+        return "m"
+    return "y"
 
 
-def _extract_linkedin_from_text(text: str) -> str | None:
-    if not text:
+def _parse_duckduckgo_results(payload: str) -> list[dict[str, str]]:
+    results: list[dict[str, str]] = []
+    # DuckDuckGo HTML endpoint render.
+    pattern = re.compile(
+        r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    for match in pattern.finditer(payload):
+        href_raw = unescape(match.group(1)).strip()
+        title_html = match.group(2)
+        title = _strip_tags(unescape(title_html)).strip()
+        if not title:
+            continue
+        url = _resolve_duckduckgo_href(href_raw)
+        if not url:
+            continue
+
+        snippet = ""
+        tail = payload[match.end() : match.end() + 1400]
+        snippet_match = re.search(
+            r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</',
+            tail,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if snippet_match:
+            snippet = _strip_tags(unescape(snippet_match.group(1))).strip()
+
+        results.append({"url": url, "title": title, "snippet": snippet})
+    return results
+
+
+def _resolve_duckduckgo_href(href_raw: str) -> str | None:
+    if not href_raw:
         return None
-
-    parsed = urlparse(text)
-    if "linkedin.com" in parsed.netloc.lower():
-        return text
-
-    params = parse_qs(parsed.query)
-    for key in ("url", "q"):
-        for value in params.get(key, []):
+    parsed = urlparse(href_raw)
+    if "duckduckgo.com" in parsed.netloc.lower():
+        params = parse_qs(parsed.query)
+        for value in params.get("uddg", []):
             decoded = unquote(value).strip()
-            parsed_decoded = urlparse(decoded)
-            if "linkedin.com" in parsed_decoded.netloc.lower():
+            if decoded:
                 return decoded
-
-    match = LINKEDIN_URL_RE.search(text)
-    if match:
-        return unquote(match.group(0))
-    return None
+    return href_raw
 
 
-def _description_text(item: ET.Element) -> str:
-    description = unescape(item.findtext("description") or "").strip()
-    if not description:
-        return ""
-    return re.sub(r"<[^>]+>", " ", description)
+def _strip_tags(value: str) -> str:
+    return re.sub(r"<[^>]+>", " ", value)
