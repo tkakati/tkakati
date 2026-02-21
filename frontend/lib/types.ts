@@ -46,3 +46,9 @@ export type CollectorRunResponse = {
   skipped: number;
   error: string | null;
 };
+
+export type CollectorRunRequest = {
+  designations?: string[];
+  locations?: string[];
+  last_days?: number;
+};

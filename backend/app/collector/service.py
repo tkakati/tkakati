@@ -28,7 +28,13 @@ class CollectorService:
         self.runs = RunRepository(db)
         self.search = SearchProvider(settings)
 
-    def run_once(self) -> CollectorResult:
+    def run_once(
+        self,
+        *,
+        designations: list[str] | None = None,
+        locations: list[str] | None = None,
+        last_days: int | None = None,
+    ) -> CollectorResult:
         started_at = datetime.now(tz=UTC)
         run = self.runs.create_run(started_at=started_at)
 
@@ -36,12 +42,27 @@ class CollectorService:
         skipped = 0
 
         try:
+            queries = [q.strip() for q in (designations or self.settings.query_terms) if q.strip()]
+            location_terms = [l.strip() for l in (locations or ["United States"]) if l.strip()]
+            days_back = last_days if last_days is not None else self.settings.collector_days_back
+
             aggregated: list[dict] = []
-            for query in self.settings.query_terms:
-                logger.info("collector.query.start query=%s", query)
-                rows = self.search.fetch(query)
-                aggregated.extend(rows)
-                logger.info("collector.query.done query=%s rows=%s", query, len(rows))
+            for query in queries:
+                for location in location_terms:
+                    logger.info(
+                        "collector.query.start query=%s location=%s days_back=%s",
+                        query,
+                        location,
+                        days_back,
+                    )
+                    rows = self.search.fetch(query, days_back=days_back, location=location)
+                    aggregated.extend(rows)
+                    logger.info(
+                        "collector.query.done query=%s location=%s rows=%s",
+                        query,
+                        location,
+                        len(rows),
+                    )
 
             deduped_map: dict[str, dict] = {}
             for row in aggregated:

@@ -1,5 +1,5 @@
 import csv
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -11,7 +11,15 @@ from app.collector.service import CollectorService
 from app.config import Settings, get_settings
 from app.db import get_db
 from app.repositories import PostRepository, RunRepository
-from app.schemas import ALLOWED_STATUSES, CollectorRunResponse, PaginatedPosts, PostOut, PostStatusUpdate, RunOut
+from app.schemas import (
+    ALLOWED_STATUSES,
+    CollectorRunRequest,
+    CollectorRunResponse,
+    PaginatedPosts,
+    PostOut,
+    PostStatusUpdate,
+    RunOut,
+)
 
 router = APIRouter()
 
@@ -28,13 +36,16 @@ def list_posts(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> PaginatedPosts:
+    now = datetime.now(tz=UTC)
+    effective_date_to = date_to or now
+    effective_date_from = date_from or (now - timedelta(days=settings.collector_days_back))
     size = min(page_size or settings.default_page_size, settings.max_page_size)
     repo = PostRepository(db)
     items, total = repo.list_posts(
         company=company,
         title=title,
-        date_from=date_from,
-        date_to=date_to,
+        date_from=effective_date_from,
+        date_to=effective_date_to,
         page=page,
         page_size=size,
     )
@@ -48,11 +59,18 @@ def list_posts(
 
 @router.post("/collector/run", response_model=CollectorRunResponse, tags=["collector"])
 def run_collector(
+    body: CollectorRunRequest | None = None,
     _: dict = Depends(require_auth),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> CollectorRunResponse:
-    result = CollectorService(db, settings).run_once()
+    payload = body or CollectorRunRequest()
+    last_days = payload.last_days if payload.last_days and payload.last_days > 0 else None
+    result = CollectorService(db, settings).run_once(
+        designations=payload.designations,
+        locations=payload.locations,
+        last_days=last_days,
+    )
     return CollectorRunResponse(
         run_id=result.run_id,
         status=result.status,
@@ -92,11 +110,14 @@ def export_csv(
     _: dict = Depends(require_auth),
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
+    now = datetime.now(tz=UTC)
+    effective_date_to = date_to or now
+    effective_date_from = date_from or (now - timedelta(days=7))
     rows = PostRepository(db).list_for_export(
         company=company,
         title=title,
-        date_from=date_from,
-        date_to=date_to,
+        date_from=effective_date_from,
+        date_to=effective_date_to,
     )
 
     output = StringIO()

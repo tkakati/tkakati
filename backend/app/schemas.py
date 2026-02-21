@@ -44,5 +44,11 @@ class CollectorRunResponse(BaseModel):
     error: str | None
 
 
+class CollectorRunRequest(BaseModel):
+    designations: list[str] | None = None
+    locations: list[str] | None = None
+    last_days: int | None = None
+
+
 class PostStatusUpdate(BaseModel):
     status: str

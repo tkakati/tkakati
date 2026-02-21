@@ -21,11 +21,12 @@ class SearchProvider:
         self.settings = settings
         self.company_extractor = CompanyExtractor(settings)
 
-    def fetch(self, role_query: str) -> list[dict]:
-        search_query = self._build_search_query(role_query)
+    def fetch(self, role_query: str, *, days_back: int | None = None, location: str | None = None) -> list[dict]:
+        search_query = self._build_search_query(role_query, location=location)
         payload = self._fetch_rss(search_query)
 
         now = datetime.now(tz=UTC)
+        max_days = days_back if days_back is not None else self.settings.collector_days_back
         results: list[dict] = []
         root = ET.fromstring(payload)
 
@@ -53,7 +54,7 @@ class SearchProvider:
             first_seen = _parse_pub_date(item.findtext("pubDate"))
             if first_seen is None:
                 continue
-            if (now - first_seen).days > self.settings.collector_days_back:
+            if (now - first_seen).days > max_days:
                 continue
 
             normalized_title = _strip_linkedin_suffix(title)
@@ -95,8 +96,10 @@ class SearchProvider:
                     content = response.text
         return content
 
-    def _build_search_query(self, role_query: str) -> str:
+    def _build_search_query(self, role_query: str, *, location: str | None = None) -> str:
         hiring = " OR ".join(f'"{term}"' for term in self.settings.hiring_terms)
+        if location and location.strip():
+            return f'site:linkedin.com/posts ({hiring}) "{role_query}" "{location.strip()}"'
         return f'site:linkedin.com/posts ({hiring}) "{role_query}"'
 
 

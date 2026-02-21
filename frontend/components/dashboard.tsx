@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { SignOutButton } from "@clerk/nextjs";
-import type { CollectorRunResponse, PaginatedPosts, PostStatus, Run } from "@/lib/types";
+import type { CollectorRunRequest, CollectorRunResponse, PaginatedPosts, PostStatus, Run } from "@/lib/types";
 import { POST_STATUSES } from "@/lib/types";
 
 type Props = {
@@ -18,6 +18,11 @@ export default function Dashboard({ initialPosts, initialRuns }: Props) {
   const [company, setCompany] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [desiredDesignations, setDesiredDesignations] = useState(
+    "product manager, senior product manager, product marketing manager, program manager",
+  );
+  const [desiredLocations, setDesiredLocations] = useState("United States");
+  const [lastDays, setLastDays] = useState("7");
   const [page, setPage] = useState(initialPosts?.page ?? 1);
   const [loading, setLoading] = useState(false);
   const [updatingPostId, setUpdatingPostId] = useState<number | null>(null);
@@ -53,7 +58,22 @@ export default function Dashboard({ initialPosts, initialRuns }: Props) {
 
   async function runCollectorNow() {
     setLoading(true);
-    const response = await fetch("/api/collector/run", { method: "POST" });
+    const payload: CollectorRunRequest = {
+      designations: desiredDesignations
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean),
+      locations: desiredLocations
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean),
+      last_days: Number(lastDays) > 0 ? Number(lastDays) : 7,
+    };
+    const response = await fetch("/api/collector/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
     const data = (await response.json()) as CollectorRunResponse;
     setRunResult(data);
     await Promise.all([refreshPosts(1), refreshRuns()]);
@@ -97,26 +117,37 @@ export default function Dashboard({ initialPosts, initialRuns }: Props) {
       <header className="header-row">
         <h1>Hiring Post Collector</h1>
         <div className="action-row">
-          <button onClick={() => void runCollectorNow()} disabled={loading}>
-            Run collector now
-          </button>
-          <a href={csvHref}>Download CSV</a>
           <SignOutButton>
             <button>Logout</button>
           </SignOutButton>
         </div>
       </header>
 
-      <section className="filters">
-        <input placeholder="Filter by company" value={company} onChange={(e) => setCompany(e.target.value)} />
-        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-        <button onClick={() => void refreshPosts(1)} disabled={loading}>
-          Apply filters
-        </button>
-        <button onClick={() => void clearFilters()} disabled={loading}>
-          Clear filters
-        </button>
+      <section className="panel">
+        <h2>Collector</h2>
+        <div className="filters">
+          <input
+            placeholder="Desired designations (comma-separated)"
+            value={desiredDesignations}
+            onChange={(e) => setDesiredDesignations(e.target.value)}
+          />
+          <input
+            placeholder="Desired locations (comma-separated)"
+            value={desiredLocations}
+            onChange={(e) => setDesiredLocations(e.target.value)}
+          />
+          <input
+            type="number"
+            min={1}
+            max={30}
+            value={lastDays}
+            onChange={(e) => setLastDays(e.target.value)}
+            placeholder="Last days"
+          />
+          <button onClick={() => void runCollectorNow()} disabled={loading}>
+            Run collector now
+          </button>
+        </div>
       </section>
 
       {runResult ? (
@@ -125,6 +156,22 @@ export default function Dashboard({ initialPosts, initialRuns }: Props) {
         </p>
       ) : null}
 
+      <section className="panel">
+        <h2>Table Filters</h2>
+        <div className="filters">
+          <input placeholder="Filter by company" value={company} onChange={(e) => setCompany(e.target.value)} />
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+          <button onClick={() => void refreshPosts(1)} disabled={loading}>
+            Apply filters
+          </button>
+          <button onClick={() => void clearFilters()} disabled={loading}>
+            Clear filters
+          </button>
+          <a href={csvHref}>Download CSV</a>
+        </div>
+      </section>
+
       <section>
         <h2>Posts</h2>
         <table>
@@ -132,9 +179,6 @@ export default function Dashboard({ initialPosts, initialRuns }: Props) {
             <tr>
               <th>First Seen</th>
               <th>Company</th>
-              <th>Seniority</th>
-              <th>Location</th>
-              <th>Remote</th>
               <th>Position</th>
               <th>Link</th>
               <th>Status</th>
@@ -145,9 +189,6 @@ export default function Dashboard({ initialPosts, initialRuns }: Props) {
               <tr key={post.id}>
                 <td>{new Date(post.first_seen).toLocaleDateString("en-US")}</td>
                 <td>{post.company ?? "-"}</td>
-                <td>{post.seniority ?? "-"}</td>
-                <td>{post.location ?? "-"}</td>
-                <td>{post.remote ? "Yes" : "No"}</td>
                 <td>{post.query_used}</td>
                 <td>
                   <a href={post.post_url} target="_blank" rel="noreferrer">
