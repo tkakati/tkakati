@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -66,7 +67,7 @@ class CompanyExtractor:
             self._cache[key] = value
             return value
 
-        value = self._extract_via_gpt(title, description)
+        value = self._extract_via_gpt(title, description, url)
         if value is None:
             value = _fallback_metadata(title, url, description)
         elif not value.company or value.company.lower() == "unknown":
@@ -80,11 +81,11 @@ class CompanyExtractor:
         self._cache[key] = value
         return value
 
-    def _extract_via_gpt(self, title: str, description: str = "") -> JobMetadata | None:
+    def _extract_via_gpt(self, title: str, description: str = "", url: str = "") -> JobMetadata | None:
         if self._client is None:
             return None
         try:
-            company = _extract_company_best(self._client, self.settings.openai_company_model, title, description, "")
+            company = _extract_company_best(self._client, self.settings.openai_company_model, title, description, url)
         except Exception:
             return None
 
@@ -158,13 +159,11 @@ def _coerce_remote(value: object) -> bool:
 
 def _heuristic_company(title: str) -> str | None:
     lowered = title.lower()
-    markers = [" at ", " @ ", " - ", " with ", " in "]
-    for marker in markers:
-        idx = lowered.find(marker)
-        if idx > 0:
-            candidate = title[:idx].strip()
-            if 2 <= len(candidate) <= 80:
-                return candidate
+    at_match = re.search(r"\bat\s+([A-Z][A-Za-z0-9&().,' -]{1,60})", title)
+    if at_match:
+        candidate = _normalize_company_candidate(at_match.group(1))
+        if candidate:
+            return candidate
 
     if title.lower().endswith("linkedin"):
         return None
@@ -173,8 +172,8 @@ def _heuristic_company(title: str) -> str | None:
     for marker in [" is hiring", " hiring:", " we are hiring"]:
         idx = lowered.find(marker)
         if idx > 0:
-            candidate = title[:idx].strip(" -|:")
-            if 2 <= len(candidate) <= 80:
+            candidate = _normalize_company_candidate(title[:idx].strip(" -|:"))
+            if candidate:
                 return candidate
 
     return None
@@ -276,7 +275,8 @@ Post:
     if not text:
         return "Unknown"
     value = text.strip().strip('"').strip("'")
-    return value or "Unknown"
+    normalized = _normalize_company_candidate(value)
+    return normalized or "Unknown"
 
 
 def _domain_fallback(url: str) -> str:
@@ -300,3 +300,59 @@ def _extract_company_best(client: OpenAI, model: str, title: str, description: s
     if url:
         return _domain_fallback(url)
     return "Unknown"
+
+
+def _normalize_company_candidate(value: str) -> str | None:
+    if not value:
+        return None
+
+    candidate = value.strip().splitlines()[0].strip().strip(" .,:;!-|")
+    if not candidate:
+        return None
+
+    lowered = candidate.lower()
+    if lowered in {"unknown", "n/a", "none", "na"}:
+        return None
+
+    banned_prefixes = (
+        "we are",
+        "we're",
+        "hiring",
+        "looking for",
+        "join our",
+        "urgent",
+        "opportunity",
+        "20+",
+    )
+    if lowered.startswith(banned_prefixes):
+        return None
+
+    banned_terms = (
+        "product manager",
+        "product marketing manager",
+        "program manager",
+        "senior product manager",
+        "hiring list",
+        "job opening",
+        "vacancy",
+        "careers",
+    )
+    if any(term in lowered for term in banned_terms):
+        return None
+
+    if "http://" in lowered or "https://" in lowered:
+        return None
+
+    words = candidate.split()
+    if len(words) > 5:
+        return None
+    if len(candidate) > 48:
+        return None
+
+    if re.search(r"[!?]{2,}", candidate):
+        return None
+
+    alias = _rule_based_company(candidate)
+    if alias:
+        return alias
+    return candidate

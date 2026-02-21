@@ -94,14 +94,72 @@ class PostRepository:
         self.db.refresh(post)
         return post
 
+    def update_existing_from_rows(self, rows: list[dict]) -> int:
+        if not rows:
+            return 0
+
+        urls = [row["post_url"] for row in rows if row.get("post_url")]
+        if not urls:
+            return 0
+
+        existing = self.db.execute(select(Post).where(Post.post_url.in_(urls))).scalars().all()
+        by_url = {post.post_url: post for post in existing}
+
+        updated = 0
+        for row in rows:
+            post_url = row.get("post_url")
+            if not post_url:
+                continue
+            post = by_url.get(post_url)
+            if post is None:
+                continue
+
+            changed = False
+            company = (row.get("company") or "").strip()
+            seniority = (row.get("seniority") or "").strip()
+            location = (row.get("location") or "").strip()
+
+            if company and (post.company or "").strip().lower() != company.lower():
+                post.company = company
+                changed = True
+            if seniority and (post.seniority or "").strip().lower() != seniority.lower():
+                post.seniority = seniority
+                changed = True
+            if location and (post.location or "").strip().lower() != location.lower():
+                post.location = location
+                changed = True
+
+            remote = row.get("remote")
+            if isinstance(remote, bool) and post.remote != remote:
+                post.remote = remote
+                changed = True
+
+            if changed:
+                self.db.add(post)
+                updated += 1
+
+        if updated > 0:
+            self.db.commit()
+        return updated
+
     def list_for_company_refresh(self, *, limit: int) -> list[Post]:
         unknown = func.lower(func.coalesce(Post.company, "")) == "unknown"
         empty_company = func.length(func.trim(func.coalesce(Post.company, ""))) == 0
         empty_seniority = func.length(func.trim(func.coalesce(Post.seniority, ""))) == 0
         empty_location = func.length(func.trim(func.coalesce(Post.location, ""))) == 0
+        suspicious_company = or_(
+            Post.company.ilike("we are%"),
+            Post.company.ilike("we're%"),
+            Post.company.ilike("hiring%"),
+            Post.company.ilike("looking for%"),
+            Post.company.ilike("%product manager%"),
+            Post.company.ilike("%program manager%"),
+            Post.company.ilike("%hiring list%"),
+            func.length(func.coalesce(Post.company, "")) > 48,
+        )
         query = (
             select(Post)
-            .where(or_(unknown, empty_company, empty_seniority, empty_location))
+            .where(or_(unknown, empty_company, empty_seniority, empty_location, suspicious_company))
             .order_by(Post.first_seen.desc())
             .limit(limit)
         )

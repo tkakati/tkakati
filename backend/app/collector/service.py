@@ -50,6 +50,8 @@ class CollectorService:
 
             inserted = self.posts.insert_many_ignore_duplicates(deduped)
             skipped = max(0, len(deduped) - inserted)
+            updated = self.posts.update_existing_from_rows(deduped)
+            logger.info("collector.run.metadata_refresh updated=%s", updated)
             finished = self.runs.complete_run(
                 run.id,
                 finished_at=datetime.now(tz=UTC),
