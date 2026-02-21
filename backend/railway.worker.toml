@@ -3,6 +3,6 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "sh -c 'alembic -c alembic.ini upgrade head && python -m app.worker'"
+startCommand = "python -m app.worker"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
