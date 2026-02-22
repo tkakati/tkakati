@@ -80,6 +80,24 @@ def run_collector(
     )
 
 
+@router.post("/collector/debug-source", tags=["collector"])
+def debug_collector_source(
+    body: CollectorRunRequest | None = None,
+    limit: int = Query(default=50, ge=1, le=300),
+    _: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    payload = body or CollectorRunRequest()
+    last_days = payload.last_days if payload.last_days and payload.last_days > 0 else None
+    return CollectorService(db, settings).debug_source(
+        designations=payload.designations,
+        locations=payload.locations,
+        last_days=last_days,
+        limit=limit,
+    )
+
+
 @router.post("/collector/refresh-companies", tags=["collector"])
 def refresh_companies(
     limit: int = Query(default=500, ge=1, le=5000),

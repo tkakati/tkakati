@@ -23,44 +23,86 @@ class SearchProvider:
         now = datetime.now(tz=UTC)
         max_days = days_back if days_back is not None else self.settings.collector_days_back
         results: list[dict] = []
-        seen_urls: set[str] = set()
+        for hit in self._search_hits(role_query, days_back=days_back, location=location):
+            title = hit["title"]
+            link = hit["url"]
+            description = hit["snippet"]
 
+            if _contains_block_term(title, self.settings.blocked_terms):
+                continue
+            if "linkedin.com" not in urlparse(link).netloc.lower():
+                continue
+
+            # DDG results don't provide a reliable publish date per hit.
+            first_seen = now
+            if (now - first_seen).days > max_days:
+                continue
+
+            normalized_title = _strip_linkedin_suffix(title)
+            metadata = self.company_extractor.extract_metadata(normalized_title, link, description)
+            results.append(
+                {
+                    "post_url": link,
+                    "title": normalized_title,
+                    "company": metadata.company or None,
+                    "seniority": metadata.seniority or None,
+                    "location": metadata.location or None,
+                    "remote": metadata.remote,
+                    "query_used": role_query,
+                    "first_seen": first_seen,
+                }
+            )
+
+        return results
+
+    def debug_preview(
+        self,
+        role_query: str,
+        *,
+        days_back: int | None = None,
+        location: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        hits = self._search_hits(role_query, days_back=days_back, location=location)
+        items: list[dict] = []
+        for hit in hits[:limit]:
+            title = hit["title"]
+            snippet = hit["snippet"]
+            url = hit["url"]
+            text = f"{title} {snippet}".strip()
+            netloc = urlparse(url).netloc.lower()
+            items.append(
+                {
+                    "search_query": hit.get("search_query", ""),
+                    "title": title,
+                    "url": url,
+                    "snippet": snippet,
+                    "is_linkedin": "linkedin.com" in netloc,
+                    "has_hiring_term": _contains_hiring_term(text, self.settings.hiring_terms),
+                    "is_blocked": _contains_block_term(title, self.settings.blocked_terms),
+                }
+            )
+        return {
+            "designation": role_query,
+            "location": location or "",
+            "total_raw": len(hits),
+            "returned": len(items),
+            "items": items,
+        }
+
+    def _search_hits(self, role_query: str, *, days_back: int | None, location: str | None) -> list[dict[str, str]]:
+        hits: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
         for search_query in self._build_search_queries(role_query, location=location):
             payload = self._fetch_html(search_query, days_back=days_back)
             for hit in _parse_duckduckgo_results(payload):
-                title = hit["title"]
                 link = hit["url"]
-                description = hit["snippet"]
-
                 if not link or link in seen_urls:
                     continue
-                if _contains_block_term(title, self.settings.blocked_terms):
-                    continue
-                if "linkedin.com" not in urlparse(link).netloc.lower():
-                    continue
-
-                # DDG results don't provide a reliable publish date per hit.
-                first_seen = now
-                if (now - first_seen).days > max_days:
-                    continue
-
-                normalized_title = _strip_linkedin_suffix(title)
-                metadata = self.company_extractor.extract_metadata(normalized_title, link, description)
-                results.append(
-                    {
-                        "post_url": link,
-                        "title": normalized_title,
-                        "company": metadata.company or None,
-                        "seniority": metadata.seniority or None,
-                        "location": metadata.location or None,
-                        "remote": metadata.remote,
-                        "query_used": role_query,
-                        "first_seen": first_seen,
-                    }
-                )
+                hit["search_query"] = search_query
+                hits.append(hit)
                 seen_urls.add(link)
-
-        return results
+        return hits
 
     def _fetch_html(self, search_query: str, *, days_back: int | None = None) -> str:
         retries = max(1, self.settings.collector_max_retries)
@@ -181,3 +223,8 @@ def _resolve_duckduckgo_href(href_raw: str) -> str | None:
 
 def _strip_tags(value: str) -> str:
     return re.sub(r"<[^>]+>", " ", value)
+
+
+def _contains_hiring_term(text: str, hiring_terms: list[str]) -> bool:
+    lowered = text.lower()
+    return any(term in lowered for term in hiring_terms)

@@ -152,3 +152,28 @@ class CollectorService:
             self.db.commit()
 
         return len(candidates), updated
+
+    def debug_source(
+        self,
+        *,
+        designations: list[str] | None = None,
+        locations: list[str] | None = None,
+        last_days: int | None = None,
+        limit: int = 50,
+    ) -> dict:
+        queries = [q.strip() for q in (designations or self.settings.query_terms) if q.strip()]
+        location_terms = [l.strip() for l in (locations or ["United States"]) if l.strip()]
+        days_back = last_days if last_days is not None else self.settings.collector_days_back
+
+        previews: list[dict] = []
+        for query in queries:
+            for location in location_terms:
+                previews.append(
+                    self.search.debug_preview(
+                        query,
+                        days_back=days_back,
+                        location=location,
+                        limit=limit,
+                    )
+                )
+        return {"previews": previews}
