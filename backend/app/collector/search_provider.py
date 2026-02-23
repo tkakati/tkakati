@@ -23,7 +23,8 @@ class SearchProvider:
         now = datetime.now(tz=UTC)
         max_days = days_back if days_back is not None else self.settings.collector_days_back
         results: list[dict] = []
-        for hit in self._search_hits(role_query, days_back=days_back, location=location):
+        hits, _ = self._search_hits(role_query, days_back=days_back, location=location)
+        for hit in hits:
             title = hit["title"]
             link = hit["url"]
             description = hit["snippet"]
@@ -63,7 +64,7 @@ class SearchProvider:
         location: str | None = None,
         limit: int = 50,
     ) -> dict:
-        hits = self._search_hits(role_query, days_back=days_back, location=location)
+        hits, errors = self._search_hits(role_query, days_back=days_back, location=location)
         items: list[dict] = []
         for hit in hits[:limit]:
             title = hit["title"]
@@ -87,22 +88,31 @@ class SearchProvider:
             "location": location or "",
             "total_raw": len(hits),
             "returned": len(items),
+            "errors": errors,
             "items": items,
         }
 
-    def _search_hits(self, role_query: str, *, days_back: int | None, location: str | None) -> list[dict[str, str]]:
+    def _search_hits(
+        self, role_query: str, *, days_back: int | None, location: str | None
+    ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
         hits: list[dict[str, str]] = []
+        errors: list[dict[str, str]] = []
         seen_urls: set[str] = set()
         for search_query in self._build_search_queries(role_query, location=location):
-            payload = self._fetch_html(search_query, days_back=days_back)
-            for hit in _parse_duckduckgo_results(payload):
+            try:
+                payload = self._fetch_html(search_query, days_back=days_back)
+                parsed = _parse_duckduckgo_results(payload)
+            except Exception as exc:  # noqa: BLE001
+                errors.append({"search_query": search_query, "error": str(exc)})
+                continue
+            for hit in parsed:
                 link = hit["url"]
                 if not link or link in seen_urls:
                     continue
                 hit["search_query"] = search_query
                 hits.append(hit)
                 seen_urls.add(link)
-        return hits
+        return hits, errors
 
     def _fetch_html(self, search_query: str, *, days_back: int | None = None) -> str:
         retries = max(1, self.settings.collector_max_retries)
