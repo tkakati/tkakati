@@ -14,6 +14,7 @@ class SearchProvider:
     """Collect LinkedIn hiring post candidates from DuckDuckGo web search."""
 
     BASE_URL = "https://html.duckduckgo.com/html/"
+    LITE_URL = "https://lite.duckduckgo.com/lite/"
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -142,6 +143,20 @@ class SearchProvider:
                     )
                     response.raise_for_status()
                     content = response.text
+                    if not _looks_like_search_results(content):
+                        lite_response = client.get(
+                            self.LITE_URL,
+                            params={"q": search_query, "kl": "us-en"},
+                            headers={
+                                "User-Agent": (
+                                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                    "Chrome/123.0.0.0 Safari/537.36"
+                                )
+                            },
+                        )
+                        lite_response.raise_for_status()
+                        content = lite_response.text
         return content
 
     def _build_search_queries(self, role_query: str, *, location: str | None = None) -> list[str]:
@@ -221,14 +236,24 @@ def _parse_duckduckgo_results(payload: str) -> list[dict[str, str]]:
 def _resolve_duckduckgo_href(href_raw: str) -> str | None:
     if not href_raw:
         return None
-    parsed = urlparse(href_raw)
+    href = href_raw.strip()
+    if href.startswith("//"):
+        href = f"https:{href}"
+    if href.startswith("/"):
+        href = f"https://duckduckgo.com{href}"
+
+    parsed = urlparse(href)
     if "duckduckgo.com" in parsed.netloc.lower():
         params = parse_qs(parsed.query)
         for value in params.get("uddg", []):
             decoded = unquote(value).strip()
             if decoded:
                 return decoded
-    return href_raw
+        return None
+
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    return href
 
 
 def _strip_tags(value: str) -> str:
@@ -238,3 +263,7 @@ def _strip_tags(value: str) -> str:
 def _contains_hiring_term(text: str, hiring_terms: list[str]) -> bool:
     lowered = text.lower()
     return any(term in lowered for term in hiring_terms)
+
+
+def _looks_like_search_results(payload: str) -> bool:
+    return ("result__a" in payload) or ("result-link" in payload) or ("web-result" in payload)
