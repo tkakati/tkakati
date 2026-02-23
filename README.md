@@ -18,7 +18,7 @@ Polished v1 monorepo for collecting and reviewing recent hiring posts.
 ## Implemented Features (Steps 3-12)
 - SQLAlchemy models + Alembic migration for `posts` and `runs`
 - Collector pipeline with:
-  - LinkedIn-focused web search via Google Programmable Search API (Custom Search JSON API)
+  - LinkedIn-focused web search via Serper API
   - role targeting for PM tracks from `COLLECTOR_QUERIES`
   - hiring-language filtering via `COLLECTOR_HIRING_TERMS`
   - block-list filtering via `COLLECTOR_BLOCK_TERMS`
@@ -59,7 +59,7 @@ Polished v1 monorepo for collecting and reviewing recent hiring posts.
    - `COLLECTOR_HIRING_TERMS` (comma-separated hiring intent terms)
    - `COLLECTOR_BLOCK_TERMS` (comma-separated exclusions)
    - `OPENAI_API_KEY` + `OPENAI_COMPANY_MODEL`
-   - `GOOGLE_API_KEY` + `GOOGLE_CSE_ID`
+   - `SERPER_API_KEY`
 
 ## Run Locally (Docker)
 1. `cp .env.example .env`

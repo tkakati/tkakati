@@ -9,9 +9,9 @@ from app.config import Settings
 
 
 class SearchProvider:
-    """Collect LinkedIn hiring post candidates using Google Programmable Search API."""
+    """Collect LinkedIn hiring post candidates using Serper Google Search API."""
 
-    BASE_URL = "https://www.googleapis.com/customsearch/v1"
+    BASE_URL = "https://google.serper.dev/search"
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -36,7 +36,7 @@ class SearchProvider:
             if not _contains_hiring_term(text, self.settings.hiring_terms):
                 continue
 
-            # Google CSE doesn't provide stable per-item publish timestamp.
+            # Serper results don't provide stable per-item publish timestamp.
             first_seen = now
             if (now - first_seen).days > max_days:
                 continue
@@ -102,7 +102,7 @@ class SearchProvider:
 
         for search_query in self._build_search_queries(role_query, location=location):
             try:
-                rows = self._google_search(search_query, days_back=days_back)
+                rows = self._serper_search(search_query, days_back=days_back)
             except Exception as exc:  # noqa: BLE001
                 errors.append({"search_query": search_query, "error": str(exc)})
                 continue
@@ -117,18 +117,18 @@ class SearchProvider:
 
         return hits, errors
 
-    def _google_search(self, search_query: str, *, days_back: int | None = None) -> list[dict[str, str]]:
-        if not self.settings.google_api_key or not self.settings.google_cse_id:
-            raise RuntimeError("google_api_key/google_cse_id is not configured")
+    def _serper_search(self, search_query: str, *, days_back: int | None = None) -> list[dict[str, str]]:
+        if not self.settings.serper_api_key:
+            raise RuntimeError("serper_api_key is not configured")
 
-        max_rows = max(1, min(self.settings.google_results_per_query, 50))
+        max_rows = max(1, min(self.settings.serper_results_per_query, 100))
         collected: list[dict[str, str]] = []
 
-        start = 1
-        while len(collected) < max_rows and start <= 91:
-            batch = min(10, max_rows - len(collected))
-            payload = self._fetch_google_page(search_query, start=start, num=batch, days_back=days_back)
-            items = payload.get("items", [])
+        page = 1
+        while len(collected) < max_rows and page <= 10:
+            batch = min(100, max_rows - len(collected))
+            payload = self._fetch_serper_page(search_query, page=page, num=batch, days_back=days_back)
+            items = payload.get("organic", [])
             if not isinstance(items, list) or not items:
                 break
 
@@ -136,19 +136,19 @@ class SearchProvider:
                 if not isinstance(item, dict):
                     continue
                 title = str(item.get("title") or "").strip()
-                link = str(item.get("link") or "").strip()
+                link = str(item.get("link") or item.get("url") or "").strip()
                 snippet = str(item.get("snippet") or "").strip()
                 if not title or not link:
                     continue
                 collected.append({"title": title, "url": link, "snippet": snippet})
 
-            if len(items) < batch:
+            if len(items) < min(10, batch):
                 break
-            start += batch
+            page += 1
 
         return collected
 
-    def _fetch_google_page(self, search_query: str, *, start: int, num: int, days_back: int | None = None) -> dict[str, Any]:
+    def _fetch_serper_page(self, search_query: str, *, page: int, num: int, days_back: int | None = None) -> dict[str, Any]:
         retries = max(1, self.settings.collector_max_retries)
         data: dict[str, Any] = {}
         for attempt in Retrying(
@@ -158,24 +158,28 @@ class SearchProvider:
         ):
             with attempt:
                 with httpx.Client(timeout=self.settings.collector_timeout_seconds) as client:
-                    params: dict[str, Any] = {
-                        "key": self.settings.google_api_key,
-                        "cx": self.settings.google_cse_id,
+                    payload: dict[str, Any] = {
                         "q": search_query,
                         "num": num,
-                        "start": start,
-                        "safe": "off",
+                        "page": page,
                         "hl": "en",
                         "gl": "us",
                     }
                     if days_back and days_back > 0:
-                        params["dateRestrict"] = _google_date_restrict(days_back)
-                    response = client.get(self.BASE_URL, params=params)
+                        payload["tbs"] = _serper_tbs(days_back)
+                    response = client.post(
+                        self.BASE_URL,
+                        headers={
+                            "X-API-KEY": self.settings.serper_api_key,
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
                     response.raise_for_status()
-                    payload = response.json()
-                    if not isinstance(payload, dict):
-                        raise RuntimeError("Invalid Google CSE response")
-                    data = payload
+                    parsed = response.json()
+                    if not isinstance(parsed, dict):
+                        raise RuntimeError("Invalid Serper response")
+                    data = parsed
         return data
 
     def _build_search_queries(self, role_query: str, *, location: str | None = None) -> list[str]:
@@ -207,16 +211,14 @@ def _contains_hiring_term(text: str, hiring_terms: list[str]) -> bool:
     return any(term in lowered for term in hiring_terms)
 
 
-def _google_date_restrict(days_back: int) -> str:
+def _serper_tbs(days_back: int) -> str:
     if days_back <= 1:
-        return "d1"
+        return "qdr:d"
     if days_back <= 30:
-        return f"d{days_back}"
+        return "qdr:w" if days_back <= 7 else "qdr:m"
     if days_back <= 180:
-        weeks = max(1, min(52, days_back // 7))
-        return f"w{weeks}"
-    months = max(1, min(24, days_back // 30))
-    return f"m{months}"
+        return "qdr:m"
+    return "qdr:y"
 
 
 def _netloc(url: str) -> str:

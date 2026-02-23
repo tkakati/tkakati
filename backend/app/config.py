@@ -18,9 +18,8 @@ class Settings(BaseSettings):
     )
     collector_hiring_terms: str = "we are hiring,hiring,looking to hire,hiring for,join our team"
     collector_block_terms: str = "careers,microsoft careers,job opening,vacancy"
-    google_api_key: str = ""
-    google_cse_id: str = ""
-    google_results_per_query: int = 20
+    serper_api_key: str = ""
+    serper_results_per_query: int = 20
     openai_api_key: str = ""
     openai_company_model: str = "gpt-5.2"
     collector_days_back: int = 7
