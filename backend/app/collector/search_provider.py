@@ -1,7 +1,5 @@
 from datetime import UTC, datetime
-from html import unescape
-import re
-from urllib.parse import parse_qs, unquote, urlencode, urlparse
+from typing import Any
 
 import httpx
 from tenacity import Retrying, stop_after_attempt, wait_exponential
@@ -11,10 +9,9 @@ from app.config import Settings
 
 
 class SearchProvider:
-    """Collect LinkedIn hiring post candidates from DuckDuckGo web search."""
+    """Collect LinkedIn hiring post candidates using Google Programmable Search API."""
 
-    BASE_URL = "https://html.duckduckgo.com/html/"
-    LITE_URL = "https://lite.duckduckgo.com/lite/"
+    BASE_URL = "https://www.googleapis.com/customsearch/v1"
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -25,17 +22,21 @@ class SearchProvider:
         max_days = days_back if days_back is not None else self.settings.collector_days_back
         results: list[dict] = []
         hits, _ = self._search_hits(role_query, days_back=days_back, location=location)
+
         for hit in hits:
             title = hit["title"]
             link = hit["url"]
             description = hit["snippet"]
+            text = f"{title} {description}".strip()
 
             if _contains_block_term(title, self.settings.blocked_terms):
                 continue
-            if "linkedin.com" not in urlparse(link).netloc.lower():
+            if not _is_linkedin_post_url(link):
+                continue
+            if not _contains_hiring_term(text, self.settings.hiring_terms):
                 continue
 
-            # DDG results don't provide a reliable publish date per hit.
+            # Google CSE doesn't provide stable per-item publish timestamp.
             first_seen = now
             if (now - first_seen).days > max_days:
                 continue
@@ -72,14 +73,13 @@ class SearchProvider:
             snippet = hit["snippet"]
             url = hit["url"]
             text = f"{title} {snippet}".strip()
-            netloc = urlparse(url).netloc.lower()
             items.append(
                 {
                     "search_query": hit.get("search_query", ""),
                     "title": title,
                     "url": url,
                     "snippet": snippet,
-                    "is_linkedin": "linkedin.com" in netloc,
+                    "is_linkedin": "linkedin.com" in _netloc(url),
                     "has_hiring_term": _contains_hiring_term(text, self.settings.hiring_terms),
                     "is_blocked": _contains_block_term(title, self.settings.blocked_terms),
                 }
@@ -99,25 +99,58 @@ class SearchProvider:
         hits: list[dict[str, str]] = []
         errors: list[dict[str, str]] = []
         seen_urls: set[str] = set()
+
         for search_query in self._build_search_queries(role_query, location=location):
             try:
-                payload = self._fetch_html(search_query, days_back=days_back)
-                parsed = _parse_duckduckgo_results(payload)
+                rows = self._google_search(search_query, days_back=days_back)
             except Exception as exc:  # noqa: BLE001
                 errors.append({"search_query": search_query, "error": str(exc)})
                 continue
-            for hit in parsed:
-                link = hit["url"]
+
+            for row in rows:
+                link = row.get("url") or ""
                 if not link or link in seen_urls:
                     continue
-                hit["search_query"] = search_query
-                hits.append(hit)
+                row["search_query"] = search_query
+                hits.append(row)
                 seen_urls.add(link)
+
         return hits, errors
 
-    def _fetch_html(self, search_query: str, *, days_back: int | None = None) -> str:
+    def _google_search(self, search_query: str, *, days_back: int | None = None) -> list[dict[str, str]]:
+        if not self.settings.google_api_key or not self.settings.google_cse_id:
+            raise RuntimeError("google_api_key/google_cse_id is not configured")
+
+        max_rows = max(1, min(self.settings.google_results_per_query, 50))
+        collected: list[dict[str, str]] = []
+
+        start = 1
+        while len(collected) < max_rows and start <= 91:
+            batch = min(10, max_rows - len(collected))
+            payload = self._fetch_google_page(search_query, start=start, num=batch, days_back=days_back)
+            items = payload.get("items", [])
+            if not isinstance(items, list) or not items:
+                break
+
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or "").strip()
+                link = str(item.get("link") or "").strip()
+                snippet = str(item.get("snippet") or "").strip()
+                if not title or not link:
+                    continue
+                collected.append({"title": title, "url": link, "snippet": snippet})
+
+            if len(items) < batch:
+                break
+            start += batch
+
+        return collected
+
+    def _fetch_google_page(self, search_query: str, *, start: int, num: int, days_back: int | None = None) -> dict[str, Any]:
         retries = max(1, self.settings.collector_max_retries)
-        content = ""
+        data: dict[str, Any] = {}
         for attempt in Retrying(
             wait=wait_exponential(min=1, max=8),
             stop=stop_after_attempt(retries),
@@ -125,47 +158,34 @@ class SearchProvider:
         ):
             with attempt:
                 with httpx.Client(timeout=self.settings.collector_timeout_seconds) as client:
-                    params = {
+                    params: dict[str, Any] = {
+                        "key": self.settings.google_api_key,
+                        "cx": self.settings.google_cse_id,
                         "q": search_query,
-                        "kl": "us-en",
-                        "df": _ddg_date_filter(days_back if days_back is not None else self.settings.collector_days_back),
+                        "num": num,
+                        "start": start,
+                        "safe": "off",
+                        "hl": "en",
+                        "gl": "us",
                     }
-                    response = client.get(
-                        self.BASE_URL,
-                        params=params,
-                        headers={
-                            "User-Agent": (
-                                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                "Chrome/123.0.0.0 Safari/537.36"
-                            )
-                        },
-                    )
+                    if days_back and days_back > 0:
+                        params["dateRestrict"] = _google_date_restrict(days_back)
+                    response = client.get(self.BASE_URL, params=params)
                     response.raise_for_status()
-                    content = response.text
-                    if not _looks_like_search_results(content):
-                        lite_response = client.get(
-                            self.LITE_URL,
-                            params={"q": search_query, "kl": "us-en"},
-                            headers={
-                                "User-Agent": (
-                                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                    "Chrome/123.0.0.0 Safari/537.36"
-                                )
-                            },
-                        )
-                        lite_response.raise_for_status()
-                        content = lite_response.text
-        return content
+                    payload = response.json()
+                    if not isinstance(payload, dict):
+                        raise RuntimeError("Invalid Google CSE response")
+                    data = payload
+        return data
 
     def _build_search_queries(self, role_query: str, *, location: str | None = None) -> list[str]:
         queries: list[str] = []
         location_part = f' "{location.strip()}"' if location and location.strip() else ""
-        # Keep searches broad enough to avoid empty result sets.
         queries.append(f'site:linkedin.com/posts "{role_query}" hiring{location_part}')
+        queries.append(f'site:linkedin.com/feed/update "{role_query}" hiring{location_part}')
         queries.append(f'site:linkedin.com "{role_query}" hiring{location_part}')
         queries.append(f'site:linkedin.com/posts "{role_query}"{location_part}')
+        queries.append(f'site:linkedin.com/feed/update "{role_query}"{location_part}')
         queries.append(f'site:linkedin.com "{role_query}"{location_part}')
         return queries
 
@@ -182,88 +202,37 @@ def _contains_block_term(text: str, blocked_terms: list[str]) -> bool:
     return any(term in lowered for term in blocked_terms)
 
 
-def _ddg_date_filter(days_back: int) -> str:
-    if days_back <= 1:
-        return "d"
-    if days_back <= 7:
-        return "w"
-    if days_back <= 31:
-        return "m"
-    return "y"
-
-
-def _parse_duckduckgo_results(payload: str) -> list[dict[str, str]]:
-    results: list[dict[str, str]] = []
-
-    # Preferred selector when DDG serves classic markup.
-    strict_pattern = re.compile(
-        r'<a[^>]*class=(?:"[^"]*result__a[^"]*"|\'[^\']*result__a[^\']*\')[^>]*href=(?:"([^"]+)"|\'([^\']+)\')[^>]*>(.*?)</a>',
-        re.IGNORECASE | re.DOTALL,
-    )
-    # Fallback selector when class names/layout differ.
-    loose_pattern = re.compile(
-        r'<a[^>]*href=(?:"([^"]+)"|\'([^\']+)\')[^>]*>(.*?)</a>',
-        re.IGNORECASE | re.DOTALL,
-    )
-
-    for pattern in (strict_pattern, loose_pattern):
-        for match in pattern.finditer(payload):
-            href_raw = unescape((match.group(1) or match.group(2) or "").strip())
-            if not href_raw:
-                continue
-            title = _strip_tags(unescape(match.group(3))).strip()
-            if not title or len(title) < 3:
-                continue
-
-            url = _resolve_duckduckgo_href(href_raw)
-            if not url:
-                continue
-
-            snippet = ""
-            tail = payload[match.end() : match.end() + 1400]
-            snippet_match = re.search(
-                r'class=(?:"[^"]*result__snippet[^"]*"|\'[^\']*result__snippet[^\']*\')[^>]*>(.*?)</',
-                tail,
-                re.IGNORECASE | re.DOTALL,
-            )
-            if snippet_match:
-                snippet = _strip_tags(unescape(snippet_match.group(1))).strip()
-
-            results.append({"url": url, "title": title, "snippet": snippet})
-    return results
-
-
-def _resolve_duckduckgo_href(href_raw: str) -> str | None:
-    if not href_raw:
-        return None
-    href = href_raw.strip()
-    if href.startswith("//"):
-        href = f"https:{href}"
-    if href.startswith("/"):
-        href = f"https://duckduckgo.com{href}"
-
-    parsed = urlparse(href)
-    if "duckduckgo.com" in parsed.netloc.lower():
-        params = parse_qs(parsed.query)
-        for value in params.get("uddg", []):
-            decoded = unquote(value).strip()
-            if decoded:
-                return decoded
-        return None
-
-    if parsed.scheme not in {"http", "https"}:
-        return None
-    return href
-
-
-def _strip_tags(value: str) -> str:
-    return re.sub(r"<[^>]+>", " ", value)
-
-
 def _contains_hiring_term(text: str, hiring_terms: list[str]) -> bool:
     lowered = text.lower()
     return any(term in lowered for term in hiring_terms)
 
 
-def _looks_like_search_results(payload: str) -> bool:
-    return ("result__a" in payload) or ("result-link" in payload) or ("web-result" in payload)
+def _google_date_restrict(days_back: int) -> str:
+    if days_back <= 1:
+        return "d1"
+    if days_back <= 30:
+        return f"d{days_back}"
+    if days_back <= 180:
+        weeks = max(1, min(52, days_back // 7))
+        return f"w{weeks}"
+    months = max(1, min(24, days_back // 30))
+    return f"m{months}"
+
+
+def _netloc(url: str) -> str:
+    try:
+        return httpx.URL(url).host or ""
+    except Exception:
+        return ""
+
+
+def _is_linkedin_post_url(url: str) -> bool:
+    try:
+        parsed = httpx.URL(url)
+        host = (parsed.host or "").lower()
+        if "linkedin.com" not in host:
+            return False
+        path = (parsed.path or "").lower()
+        return "/posts/" in path or path.startswith("/feed/update/")
+    except Exception:
+        return False
