@@ -1,10 +1,14 @@
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 
 from openai import AsyncOpenAI
 
+from app.collector.company_signal_extractor import CompanyExtractionResult, CompanySignalExtractor
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -17,6 +21,8 @@ class SignalClassification:
     signal_type: str
     confidence: float
     reasoning: str
+    company_confidence: float = 0.0
+    company_source: str = "llm"
 
 
 class SignalClassifier:
@@ -26,6 +32,7 @@ class SignalClassifier:
             AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
         )
         self._cache: dict[str, SignalClassification] = {}
+        self._company_extractor = CompanySignalExtractor()
 
     def classify_many_sync(self, rows: list[dict]) -> list[SignalClassification]:
         if not rows:
@@ -53,10 +60,19 @@ class SignalClassifier:
         if cached is not None:
             return cached
 
+        deterministic_company = self._company_extractor.extract_best(
+            title=title,
+            snippet=snippet,
+            url=url,
+            search_query=search_query,
+        )
+
         if self._client is None:
-            fallback = _fallback_classification(title, snippet)
-            self._cache[cache_key] = fallback
-            return fallback
+            parsed = _fallback_classification(title, snippet)
+            self._apply_company_selection(parsed, deterministic_company)
+            self._log_company_selection(url=url, parsed=parsed)
+            self._cache[cache_key] = parsed
+            return parsed
 
         system_prompt = """
 You are a hiring signal classifier.
@@ -87,6 +103,11 @@ Examples:
 
 Return strict JSON only. No markdown. No extra keys.
 """
+        deterministic_hint = (
+            f"{deterministic_company.company} (confidence={deterministic_company.confidence:.2f}, source={deterministic_company.source})"
+            if deterministic_company is not None
+            else "none"
+        )
         user_prompt = f"""
 Classify this search result.
 
@@ -96,6 +117,7 @@ Input:
 - url: {url}
 - designation: {designation}
 - search_query: {search_query}
+- deterministic_company_hint: {deterministic_hint}
 
 Return JSON with keys exactly:
 is_hiring (boolean),
@@ -124,8 +146,51 @@ Use only the provided text fields for evidence.
         except Exception:
             parsed = _fallback_classification(title, snippet)
 
+        self._apply_company_selection(parsed, deterministic_company)
+        self._log_company_selection(url=url, parsed=parsed)
         self._cache[cache_key] = parsed
         return parsed
+
+    def _apply_company_selection(
+        self,
+        parsed: SignalClassification,
+        deterministic_company: CompanyExtractionResult | None,
+    ) -> None:
+        # Deterministic pipeline is preferred when confidence is high.
+        if deterministic_company is not None and (
+            deterministic_company.confidence >= self.settings.company_deterministic_min_confidence
+        ):
+            parsed.company = deterministic_company.company
+            parsed.company_confidence = deterministic_company.confidence
+            parsed.company_source = deterministic_company.source
+        elif parsed.company:
+            parsed.company_source = "llm"
+            if parsed.company_confidence <= 0:
+                parsed.company_confidence = 0.55
+        elif deterministic_company is not None:
+            parsed.company = deterministic_company.company
+            parsed.company_confidence = deterministic_company.confidence
+            parsed.company_source = deterministic_company.source
+
+        if parsed.is_hiring:
+            boosted = _derive_signal_strength(
+                is_hiring=parsed.is_hiring,
+                has_role=bool(parsed.role),
+                has_company=bool(parsed.company),
+                hiring_confidence=parsed.confidence,
+            )
+            if boosted > parsed.signal_strength:
+                parsed.signal_strength = boosted
+                parsed.signal_type = _default_signal_type(boosted)
+
+    def _log_company_selection(self, *, url: str, parsed: SignalClassification) -> None:
+        logger.info(
+            "signal.company_extraction source=%s confidence=%.2f company=%s url=%s",
+            parsed.company_source,
+            parsed.company_confidence,
+            parsed.company or "",
+            url,
+        )
 
 
 def _response_text(response: object) -> str:
@@ -152,11 +217,7 @@ def _parse_classification(raw: str) -> SignalClassification | None:
     hiring_confidence = _clamp_float(payload.get("hiring_confidence"), 0.0, 1.0)
     role_confidence = _clamp_float(payload.get("role_confidence"), 0.0, 1.0)
     company_confidence = _clamp_float(payload.get("company_confidence"), 0.0, 1.0)
-    confidence = _clamp_float(
-        payload.get("confidence"),
-        0.0,
-        1.0,
-    )
+    confidence = _clamp_float(payload.get("confidence"), 0.0, 1.0)
     if confidence == 0.0:
         confidence = round((hiring_confidence + role_confidence + company_confidence) / 3, 4)
 
@@ -181,6 +242,8 @@ def _parse_classification(raw: str) -> SignalClassification | None:
         signal_type=signal_type,
         confidence=confidence,
         reasoning=str(payload.get("reasoning") or "").strip()[:500],
+        company_confidence=company_confidence,
+        company_source="llm",
     )
 
 
@@ -189,17 +252,16 @@ def _fallback_classification(title: str, snippet: str) -> SignalClassification:
     hiring_markers = ["hiring", "looking to hire", "we are hiring", "join our team", "opening"]
     is_hiring = any(marker in text for marker in hiring_markers)
     role = _infer_role(f"{title} {snippet}")
-    has_company = bool(_infer_company(title, snippet))
     strength = _derive_signal_strength(
         is_hiring=is_hiring,
         has_role=bool(role),
-        has_company=has_company,
+        has_company=False,
         hiring_confidence=0.45 if is_hiring else 0.2,
     )
     if not text.strip():
         strength = 0
     return SignalClassification(
-        company=_infer_company(title, snippet),
+        company="",
         role=role,
         seniority=_infer_seniority(text),
         is_hiring=is_hiring,
@@ -207,6 +269,8 @@ def _fallback_classification(title: str, snippet: str) -> SignalClassification:
         signal_type=_default_signal_type(strength),
         confidence=0.45 if is_hiring else 0.2,
         reasoning="Fallback heuristic classification",
+        company_confidence=0.0,
+        company_source="regex",
     )
 
 
@@ -268,23 +332,6 @@ def _infer_role(text: str) -> str:
     for needle, output in role_map:
         if needle in lowered:
             return output
-    return ""
-
-
-def _infer_company(title: str, snippet: str) -> str:
-    text = f"{title} {snippet}"
-    lowered = text.lower()
-    markers = [" at ", " for ", " with "]
-    for marker in markers:
-        idx = lowered.find(marker)
-        if idx == -1:
-            continue
-        tail = text[idx + len(marker) :].strip()
-        if not tail:
-            continue
-        company = tail.split(" ")[0].strip(",.:-")
-        if company and company[0].isupper():
-            return company
     return ""
 
 
