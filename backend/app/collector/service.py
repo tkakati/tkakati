@@ -1,4 +1,5 @@
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -209,3 +210,109 @@ class CollectorService:
                     )
                 )
         return {"previews": previews}
+
+    def preview_signals(
+        self,
+        *,
+        designations: list[str] | None = None,
+        locations: list[str] | None = None,
+        last_days: int | None = None,
+    ) -> dict:
+        queries = [q.strip() for q in (designations or self.settings.query_terms) if q.strip()]
+        location_terms = [l.strip() for l in (locations or ["United States"]) if l.strip()]
+        days_back = last_days if last_days is not None else self.settings.collector_days_back
+
+        filter_counts = {"blocked": 0, "non_linkedin": 0, "missing_hiring_term": 0}
+        candidates: list[dict] = []
+
+        for query in queries:
+            for location in location_terms:
+                preview = self.search.debug_preview(
+                    query,
+                    days_back=days_back,
+                    location=location,
+                    limit=120,
+                )
+                for item in preview.get("items", []):
+                    is_blocked = bool(item.get("is_blocked"))
+                    is_linkedin = bool(item.get("is_linkedin"))
+                    has_hiring_term = bool(item.get("has_hiring_term"))
+
+                    if is_blocked:
+                        filter_counts["blocked"] += 1
+                        continue
+                    if not is_linkedin:
+                        filter_counts["non_linkedin"] += 1
+                        continue
+                    if not has_hiring_term:
+                        filter_counts["missing_hiring_term"] += 1
+                        continue
+
+                    candidates.append(
+                        {
+                            "title": item.get("title", ""),
+                            "snippet": item.get("snippet", ""),
+                            "url": item.get("url", ""),
+                            "designation": query,
+                            "search_query": item.get("search_query", ""),
+                        }
+                    )
+
+        deduped_map: dict[str, dict] = {}
+        for candidate in candidates:
+            url = str(candidate.get("url") or "").strip()
+            if not url:
+                continue
+            deduped_map[url] = candidate
+        deduped = list(deduped_map.values())
+
+        classifications = self.classifier.classify_many_sync(deduped)
+
+        company_rows: dict[str, list[dict]] = defaultdict(list)
+        strong_signals: list[dict] = []
+        for row, classification in zip(deduped, classifications, strict=False):
+            company = (classification.company or "").strip() or "Unknown"
+            role = (classification.role or "").strip() or str(row.get("designation") or "").strip()
+            entry = {
+                "company": company,
+                "role": role,
+                "signal_strength": classification.signal_strength,
+                "confidence": round(classification.confidence, 4),
+                "url": str(row.get("url") or "").strip(),
+                "is_hiring": classification.is_hiring,
+            }
+            company_rows[company].append(entry)
+            if classification.is_hiring:
+                strong_signals.append(entry)
+
+        top_companies = []
+        for company, rows in company_rows.items():
+            strengths = [r["signal_strength"] for r in rows]
+            avg_strength = (sum(strengths) / len(strengths)) if strengths else 0.0
+            recent_roles = list(dict.fromkeys([r["role"] for r in rows if r["role"]]))[:5]
+            top_companies.append(
+                {
+                    "company": company,
+                    "signal_count": len(rows),
+                    "avg_strength": round(avg_strength, 2),
+                    "recent_roles": recent_roles,
+                }
+            )
+
+        top_companies.sort(key=lambda x: (x["signal_count"], x["avg_strength"]), reverse=True)
+        strong_signals.sort(key=lambda x: (x["signal_strength"], x["confidence"]), reverse=True)
+
+        noise_filtered = sum(filter_counts.values())
+        logger.info(
+            "collector.preview_signals counts candidates=%s deduped=%s noise_filtered=%s filters=%s",
+            len(candidates),
+            len(deduped),
+            noise_filtered,
+            filter_counts,
+        )
+
+        return {
+            "top_companies": top_companies[:10],
+            "strong_signals": strong_signals[:10],
+            "noise_filtered": noise_filtered,
+        }

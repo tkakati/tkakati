@@ -1,3 +1,4 @@
+import asyncio
 import csv
 from datetime import UTC, datetime, timedelta
 from io import StringIO
@@ -107,6 +108,24 @@ def refresh_companies(
 ) -> dict[str, int]:
     scanned, updated = CollectorService(db, settings).refresh_companies(limit=limit)
     return {"scanned": scanned, "updated": updated}
+
+
+@router.post("/preview-signals", tags=["collector"])
+async def preview_signals(
+    body: CollectorRunRequest | None = None,
+    _: dict = Depends(require_auth),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    payload = body or CollectorRunRequest()
+    last_days = payload.last_days if payload.last_days and payload.last_days > 0 else None
+    service = CollectorService(db, settings)
+    return await asyncio.to_thread(
+        service.preview_signals,
+        designations=payload.designations,
+        locations=payload.locations,
+        last_days=last_days,
+    )
 
 
 @router.get("/runs", response_model=list[RunOut], tags=["runs"])
