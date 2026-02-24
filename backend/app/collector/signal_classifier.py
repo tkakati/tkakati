@@ -54,15 +54,39 @@ class SignalClassifier:
             return cached
 
         if self._client is None:
-            fallback = _fallback_classification(title, designation, snippet)
+            fallback = _fallback_classification(title, snippet)
             self._cache[cache_key] = fallback
             return fallback
 
-        system_prompt = (
-            "You are a hiring intelligence classifier. "
-            "Extract hiring signals from LinkedIn-style posts and return strict JSON only. "
-            "No markdown, no prose outside JSON."
-        )
+        system_prompt = """
+You are a hiring signal classifier.
+
+Task 1: Determine whether the post signals ACTIVE hiring.
+A post is hiring ONLY if:
+1. It mentions an open role.
+2. It invites applications or referrals.
+3. It references a job link, recruiter, or hiring manager.
+
+NOT hiring:
+- hiring philosophy
+- leadership
+- career advice
+- trends
+- personal branding
+
+Task 2: Extract job role ONLY from the post content.
+Do not assume the role from the search query.
+
+Task 3: Extract the company that is actively hiring.
+If multiple companies are mentioned, choose the one actively hiring.
+
+Examples:
+- "We are hiring a product manager" -> hiring
+- "Stop hiring animators" -> not hiring
+- "CVS Health is hiring" -> company = CVS Health
+
+Return strict JSON only. No markdown. No extra keys.
+"""
         user_prompt = f"""
 Classify this search result.
 
@@ -73,23 +97,17 @@ Input:
 - designation: {designation}
 - search_query: {search_query}
 
-Return JSON with keys:
-company (string),
+Return JSON with keys exactly:
+is_hiring (boolean),
+hiring_confidence (number 0-1),
 role (string),
 seniority (string),
-is_hiring (boolean),
-signal_strength (integer 0-5),
-signal_type (one of: strong, weak, indirect, noise),
-confidence (number 0-1),
+role_confidence (number 0-1),
+company (string),
+company_confidence (number 0-1),
 reasoning (string, concise).
 
-Scoring rubric:
-5 = direct hiring post from recruiter/company with clear active role
-4 = strong hiring language, actor less clear
-3 = indirect hiring/expansion signal
-2 = team or industry growth discussion
-1 = weak signal
-0 = noise / not hiring related
+Use only the provided text fields for evidence.
 """
         try:
             response = await self._client.responses.create(
@@ -102,9 +120,9 @@ Scoring rubric:
             text = _response_text(response)
             parsed = _parse_classification(text)
             if parsed is None:
-                parsed = _fallback_classification(title, designation, snippet)
+                parsed = _fallback_classification(title, snippet)
         except Exception:
-            parsed = _fallback_classification(title, designation, snippet)
+            parsed = _fallback_classification(title, snippet)
 
         self._cache[cache_key] = parsed
         return parsed
@@ -127,17 +145,38 @@ def _parse_classification(raw: str) -> SignalClassification | None:
     if not isinstance(payload, dict):
         return None
 
+    is_hiring = _to_bool(payload.get("is_hiring"))
+    role = str(payload.get("role") or "").strip()
+    seniority = str(payload.get("seniority") or "").strip()
+    company = str(payload.get("company") or "").strip()
+    hiring_confidence = _clamp_float(payload.get("hiring_confidence"), 0.0, 1.0)
+    role_confidence = _clamp_float(payload.get("role_confidence"), 0.0, 1.0)
+    company_confidence = _clamp_float(payload.get("company_confidence"), 0.0, 1.0)
+    confidence = _clamp_float(
+        payload.get("confidence"),
+        0.0,
+        1.0,
+    )
+    if confidence == 0.0:
+        confidence = round((hiring_confidence + role_confidence + company_confidence) / 3, 4)
+
     signal_strength = _clamp_int(payload.get("signal_strength"), 0, 5)
-    confidence = _clamp_float(payload.get("confidence"), 0.0, 1.0)
+    if signal_strength == 0 and is_hiring:
+        signal_strength = _derive_signal_strength(
+            is_hiring=is_hiring,
+            has_role=bool(role),
+            has_company=bool(company),
+            hiring_confidence=hiring_confidence,
+        )
     signal_type = str(payload.get("signal_type") or "").strip().lower()
     if signal_type not in {"strong", "weak", "indirect", "noise"}:
         signal_type = _default_signal_type(signal_strength)
 
     return SignalClassification(
-        company=str(payload.get("company") or "").strip(),
-        role=str(payload.get("role") or "").strip(),
-        seniority=str(payload.get("seniority") or "").strip(),
-        is_hiring=bool(payload.get("is_hiring")),
+        company=company,
+        role=role,
+        seniority=seniority,
+        is_hiring=is_hiring,
         signal_strength=signal_strength,
         signal_type=signal_type,
         confidence=confidence,
@@ -145,16 +184,23 @@ def _parse_classification(raw: str) -> SignalClassification | None:
     )
 
 
-def _fallback_classification(title: str, designation: str, snippet: str) -> SignalClassification:
+def _fallback_classification(title: str, snippet: str) -> SignalClassification:
     text = f"{title} {snippet}".lower()
     hiring_markers = ["hiring", "looking to hire", "we are hiring", "join our team", "opening"]
     is_hiring = any(marker in text for marker in hiring_markers)
-    strength = 4 if is_hiring else 1
+    role = _infer_role(f"{title} {snippet}")
+    has_company = bool(_infer_company(title, snippet))
+    strength = _derive_signal_strength(
+        is_hiring=is_hiring,
+        has_role=bool(role),
+        has_company=has_company,
+        hiring_confidence=0.45 if is_hiring else 0.2,
+    )
     if not text.strip():
         strength = 0
     return SignalClassification(
-        company="",
-        role=designation,
+        company=_infer_company(title, snippet),
+        role=role,
         seniority=_infer_seniority(text),
         is_hiring=is_hiring,
         signal_strength=strength,
@@ -184,6 +230,62 @@ def _default_signal_type(signal_strength: int) -> str:
     if signal_strength == 1:
         return "weak"
     return "noise"
+
+
+def _derive_signal_strength(*, is_hiring: bool, has_role: bool, has_company: bool, hiring_confidence: float) -> int:
+    if not is_hiring:
+        return 0
+    if has_role and has_company and hiring_confidence >= 0.75:
+        return 5
+    if has_role and (has_company or hiring_confidence >= 0.65):
+        return 4
+    if has_role or has_company:
+        return 3
+    return 2
+
+
+def _to_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        return lowered in {"true", "yes", "1"}
+    return False
+
+
+def _infer_role(text: str) -> str:
+    lowered = text.lower()
+    role_map = [
+        ("senior product marketing manager", "Senior Product Marketing Manager"),
+        ("product marketing manager", "Product Marketing Manager"),
+        ("senior product manager", "Senior Product Manager"),
+        ("product manager", "Product Manager"),
+        ("program manager", "Program Manager"),
+        ("project manager", "Project Manager"),
+    ]
+    for needle, output in role_map:
+        if needle in lowered:
+            return output
+    return ""
+
+
+def _infer_company(title: str, snippet: str) -> str:
+    text = f"{title} {snippet}"
+    lowered = text.lower()
+    markers = [" at ", " for ", " with "]
+    for marker in markers:
+        idx = lowered.find(marker)
+        if idx == -1:
+            continue
+        tail = text[idx + len(marker) :].strip()
+        if not tail:
+            continue
+        company = tail.split(" ")[0].strip(",.:-")
+        if company and company[0].isupper():
+            return company
+    return ""
 
 
 def _clamp_int(value: object, low: int, high: int) -> int:
