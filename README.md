@@ -16,13 +16,16 @@ Polished v1 monorepo for collecting and reviewing recent hiring posts.
 - `docker-compose.yml`: local full stack
 
 ## Implemented Features (Steps 3-12)
-- SQLAlchemy models + Alembic migration for `posts` and `runs`
+- SQLAlchemy models + Alembic migrations for `posts`, `runs`, and `hiring_signals`
 - Collector pipeline with:
   - LinkedIn-focused web search via Serper API
   - role targeting for PM tracks from `COLLECTOR_QUERIES`
   - hiring-language filtering via `COLLECTOR_HIRING_TERMS`
   - block-list filtering via `COLLECTOR_BLOCK_TERMS`
   - GPT-based company extraction (`OPENAI_COMPANY_MODEL`, default `gpt-5.2`)
+  - LLM hiring signal classification (`OPENAI_SIGNAL_MODEL`, default `gpt-4o`)
+  - async batched signal scoring + storage in `hiring_signals`
+  - company-level signal aggregation logs (strong-signal count + average strength)
   - 7-day filtering (`COLLECTOR_DAYS_BACK`)
   - retries/backoff (`COLLECTOR_MAX_RETRIES`)
   - request timeout (`COLLECTOR_TIMEOUT_SECONDS`)
@@ -59,6 +62,7 @@ Polished v1 monorepo for collecting and reviewing recent hiring posts.
    - `COLLECTOR_HIRING_TERMS` (comma-separated hiring intent terms)
    - `COLLECTOR_BLOCK_TERMS` (comma-separated exclusions)
    - `OPENAI_API_KEY` + `OPENAI_COMPANY_MODEL`
+   - `OPENAI_SIGNAL_MODEL` + `SIGNAL_CLASSIFIER_CONCURRENCY`
    - `SERPER_API_KEY`
 
 ## Run Locally (Docker)

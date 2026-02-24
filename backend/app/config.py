@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     serper_results_per_query: int = 20
     openai_api_key: str = ""
     openai_company_model: str = "gpt-5.2"
+    openai_signal_model: str = "gpt-4o"
+    signal_classifier_concurrency: int = 8
     collector_days_back: int = 7
     collector_timeout_seconds: float = 15.0
     collector_max_retries: int = 3

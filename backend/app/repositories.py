@@ -1,10 +1,10 @@
 from datetime import datetime
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.models import Post, Run
+from app.models import HiringSignal, Post, Run
 
 
 class PostRepository:
@@ -210,3 +210,40 @@ class RunRepository:
     def list_runs(self, limit: int = 50) -> list[Run]:
         query = select(Run).order_by(Run.started_at.desc()).limit(limit)
         return self.db.execute(query).scalars().all()
+
+
+class HiringSignalRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def insert_many(self, rows: list[dict]) -> int:
+        if not rows:
+            return 0
+        stmt = insert(HiringSignal).values(rows)
+        stmt = stmt.returning(HiringSignal.id)
+        result = self.db.execute(stmt)
+        inserted_ids = result.scalars().all()
+        self.db.commit()
+        return len(inserted_ids)
+
+    def aggregate_company_metrics(self) -> list[dict]:
+        strong_case = case((HiringSignal.signal_strength >= 4, 1), else_=0)
+        query = (
+            select(
+                func.coalesce(HiringSignal.company, "").label("company"),
+                func.sum(strong_case).label("strong_signals"),
+                func.avg(HiringSignal.signal_strength).label("avg_signal_strength"),
+            )
+            .group_by(HiringSignal.company)
+            .order_by(func.avg(HiringSignal.signal_strength).desc(), func.sum(strong_case).desc())
+            .limit(50)
+        )
+        rows = self.db.execute(query).all()
+        return [
+            {
+                "company": company or "",
+                "strong_signals": int(strong_signals or 0),
+                "avg_signal_strength": float(avg_signal_strength or 0.0),
+            }
+            for company, strong_signals, avg_signal_strength in rows
+        ]

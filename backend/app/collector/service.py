@@ -4,9 +4,10 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from app.collector.signal_classifier import SignalClassifier
 from app.collector.search_provider import SearchProvider
 from app.config import Settings
-from app.repositories import PostRepository, RunRepository
+from app.repositories import HiringSignalRepository, PostRepository, RunRepository
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +26,10 @@ class CollectorService:
         self.db = db
         self.settings = settings
         self.posts = PostRepository(db)
+        self.signals = HiringSignalRepository(db)
         self.runs = RunRepository(db)
         self.search = SearchProvider(settings)
+        self.classifier = SignalClassifier(settings)
 
     def run_once(
         self,
@@ -72,10 +75,39 @@ class CollectorService:
                 deduped_map[row["post_url"]] = row
             deduped = list(deduped_map.values())
 
+            classifications = self.classifier.classify_many_sync(deduped)
+            signal_rows: list[dict] = []
+            for row, classification in zip(deduped, classifications, strict=False):
+                company = classification.company.strip() or (row.get("company") or "").strip()
+                if company and not row.get("company"):
+                    row["company"] = company
+                signal_rows.append(
+                    {
+                        "company": company or None,
+                        "role": (classification.role.strip() or row.get("query_used") or "").strip() or None,
+                        "seniority": (classification.seniority.strip() or row.get("seniority") or "").strip() or None,
+                        "is_hiring": classification.is_hiring,
+                        "signal_strength": classification.signal_strength,
+                        "signal_type": classification.signal_type,
+                        "confidence": classification.confidence,
+                        "reasoning": classification.reasoning,
+                        "source_url": row["post_url"],
+                        "raw_text": f"{row.get('title', '').strip()} {row.get('query_used', '').strip()}".strip(),
+                        "timestamp": datetime.now(tz=UTC),
+                    }
+                )
+            inserted_signals = self.signals.insert_many(signal_rows)
+            company_metrics = self.signals.aggregate_company_metrics()
+
             inserted = self.posts.insert_many_ignore_duplicates(deduped)
             skipped = max(0, len(deduped) - inserted)
             updated = self.posts.update_existing_from_rows(deduped)
             logger.info("collector.run.metadata_refresh updated=%s", updated)
+            logger.info(
+                "collector.run.signals stored=%s top_company_metrics=%s",
+                inserted_signals,
+                company_metrics[:5],
+            )
             finished = self.runs.complete_run(
                 run.id,
                 finished_at=datetime.now(tz=UTC),
