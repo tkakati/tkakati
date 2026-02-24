@@ -34,6 +34,11 @@ Polished v1 monorepo for collecting and reviewing recent hiring posts.
 - API endpoints with OpenAPI docs:
   - `GET /posts`
   - `POST /collector/run`
+  - `POST /preview-signals`
+  - `GET /signals`
+  - `GET /signals/analytics`
+  - `GET /signals/review-queue`
+  - `PATCH /signals/{signal_id}/review`
   - `GET /runs`
   - `GET /export.csv`
 - Scheduler/worker entrypoints:
@@ -63,6 +68,7 @@ Polished v1 monorepo for collecting and reviewing recent hiring posts.
    - `COLLECTOR_BLOCK_TERMS` (comma-separated exclusions)
    - `OPENAI_API_KEY` + `OPENAI_COMPANY_MODEL`
    - `OPENAI_SIGNAL_MODEL` + `SIGNAL_CLASSIFIER_CONCURRENCY`
+   - `COMPANY_DETERMINISTIC_MIN_CONFIDENCE`
    - `SERPER_API_KEY`
 
 ## Run Locally (Docker)

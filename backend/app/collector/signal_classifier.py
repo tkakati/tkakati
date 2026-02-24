@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import json
 import logging
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ class SignalClassification:
     signal_type: str
     confidence: float
     reasoning: str
+    hiring_confidence: float = 0.0
+    role_match_score: float = 0.0
     company_confidence: float = 0.0
     company_source: str = "llm"
 
@@ -70,6 +73,7 @@ class SignalClassifier:
         if self._client is None:
             parsed = _fallback_classification(title, snippet)
             self._apply_company_selection(parsed, deterministic_company)
+            parsed.role_match_score = _role_match_score(designation, parsed.role)
             self._log_company_selection(url=url, parsed=parsed)
             self._cache[cache_key] = parsed
             return parsed
@@ -147,6 +151,7 @@ Use only the provided text fields for evidence.
             parsed = _fallback_classification(title, snippet)
 
         self._apply_company_selection(parsed, deterministic_company)
+        parsed.role_match_score = _role_match_score(designation, parsed.role)
         self._log_company_selection(url=url, parsed=parsed)
         self._cache[cache_key] = parsed
         return parsed
@@ -177,7 +182,7 @@ Use only the provided text fields for evidence.
                 is_hiring=parsed.is_hiring,
                 has_role=bool(parsed.role),
                 has_company=bool(parsed.company),
-                hiring_confidence=parsed.confidence,
+                hiring_confidence=parsed.hiring_confidence or parsed.confidence,
             )
             if boosted > parsed.signal_strength:
                 parsed.signal_strength = boosted
@@ -242,6 +247,8 @@ def _parse_classification(raw: str) -> SignalClassification | None:
         signal_type=signal_type,
         confidence=confidence,
         reasoning=str(payload.get("reasoning") or "").strip()[:500],
+        hiring_confidence=hiring_confidence,
+        role_match_score=0.0,
         company_confidence=company_confidence,
         company_source="llm",
     )
@@ -269,6 +276,8 @@ def _fallback_classification(title: str, snippet: str) -> SignalClassification:
         signal_type=_default_signal_type(strength),
         confidence=0.45 if is_hiring else 0.2,
         reasoning="Fallback heuristic classification",
+        hiring_confidence=0.45 if is_hiring else 0.2,
+        role_match_score=0.0,
         company_confidence=0.0,
         company_source="regex",
     )
@@ -349,3 +358,9 @@ def _clamp_float(value: object, low: float, high: float) -> float:
     except Exception:
         return low
     return max(low, min(high, num))
+
+
+def _role_match_score(designation: str, role: str) -> float:
+    if not designation or not role:
+        return 0.0
+    return round(difflib.SequenceMatcher(None, designation.lower().strip(), role.lower().strip()).ratio(), 4)

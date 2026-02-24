@@ -52,3 +52,47 @@ class CollectorRunRequest(BaseModel):
 
 class PostStatusUpdate(BaseModel):
     status: str
+
+
+class SignalOut(BaseModel):
+    id: int
+    company: str | None
+    role: str | None
+    seniority: str | None
+    is_hiring: bool
+    signal_strength: int
+    signal_type: str
+    confidence: float
+    company_source: str
+    company_confidence: float
+    hiring_confidence: float
+    role_match_score: float
+    reasoning: str | None
+    review_status: str
+    review_label: str | None
+    source_url: HttpUrl
+    timestamp: datetime
+
+
+class PaginatedSignals(BaseModel):
+    items: list[SignalOut]
+    page: int
+    page_size: int
+    total: int
+    total_base: int
+
+
+class SignalFeedbackIn(BaseModel):
+    action: str
+    label: str | None = None
+    notes: str | None = None
+
+
+class SignalMetricsOut(BaseModel):
+    strong_signals: int
+    medium_confidence: int
+    filtered: int
+    common_filter_reasons: list[dict]
+    false_positive_trends: list[dict]
+    emerging_companies: list[dict]
+    hidden_hiring_clusters: list[dict]
