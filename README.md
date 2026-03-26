@@ -14,7 +14,7 @@ I share notes and builds on my [personal site](https://YOUR-LINK).
 ## Selected work
 
 - [HireFeed](https://github.com/tkakati/job-post-search) - Agentic job-post search focused on hiring posts instead of listings.
-- [Zillow Listing and Lead Optimization](https://github.com/tkakati/zillow_listing_and_lead_optimization) - Tradeoff-aware system for improving listing performance and lead quality.
+- [Zillow Decision Dashboard](https://github.com/tkakati/zillow-decision-dashboard) - Transparent listing tradeoff dashboard for faster housing decisions.
 
 ## How I think
 
