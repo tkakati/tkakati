@@ -1,8 +1,9 @@
 # Hi, I'm Tanmay Kakati
 
-**AI Product Manager** building products that turn messy signals into clear, actionable decisions.
+I’m a product manager currently building AI-powered products that turn messy signals into clear, actionable decisions.
 
-I focus on product strategy, execution, and user outcomes, and use AI where it materially improves speed, quality, and decision-making.  
+My work focuses on designing end-to-end product systems; from problem definition to retrieval, ranking, and evaluation, using AI where it meaningfully improves product outcomes.  
+
 I share notes and builds on my [personal site](https://tanmaykakati.vercel.app/).
 
 ## What I’m working on
