@@ -1,21 +1,48 @@
 # Hi, I'm Tanmay Kakati
 
-Product Manager building AI-native products for hiring discovery, decision support, and workflow automation.
+I build AI-native tools that turn messy, real-world signals into something usable.
 
-I focus on turning noisy data into useful product signals, then shipping clean interfaces that help people take action faster.
+Right now, I’m exploring how people actually discover opportunities, make decisions, and take action — and where software can make that faster, clearer, and less frustrating.
 
-## Focus
-- AI-assisted product discovery and ranking workflows
-- Hiring-signal extraction from real-world post data
-- Decision-support UX for high-stakes choices
-- End-to-end product execution from 0 to 1
+---
 
-## Selected Work
-- [HireFeed](https://github.com/tkakati/job-post-search) - Agentic job-post search focused on hiring posts (not listings)
-- [Zillow Listing and Lead Optimization](https://github.com/tkakati/zillow_listing_and_lead_optimization) - Tradeoff-aware lead/listing optimization workflows
-- [Personal Website](https://github.com/tkakati/tanmaykakati_website) - Portfolio and writing
+## What I’m working on
+
+- extracting hiring signals from noisy, unstructured posts  
+- building ranking systems that feel intuitive, not black-box  
+- designing interfaces that help people decide, not just browse  
+- shipping end-to-end systems from idea → working product  
+
+---
+
+## Selected work
+
+- **HireFeed**  
+  Agentic job-post search focused on real hiring posts, not listings  
+
+- **Zillow Listing and Lead Optimization**  
+  Tradeoff-aware system for improving listing performance and lead quality  
+
+---
+
+## Writing and thinking
+
+I write about product systems, AI workflows, and decision design.
+
+→ [Personal Website](https://YOUR-LINK)
+
+---
+
+## How I think
+
+- most useful data is unstructured and ignored  
+- good products reduce decision friction, not just surface options  
+- AI should clarify and act, not just generate  
+- simple systems that work > complex systems that impress  
+
+---
 
 ## Contact
-- GitHub: [@tkakati](https://github.com/tkakati)
-- LinkedIn: add your profile link here
+
+- LinkedIn: add your profile link  
 - Location: Seattle, WA
