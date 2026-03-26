@@ -6,10 +6,10 @@ I share notes and builds on my [personal site](https://tanmaykakati.vercel.app/)
 
 ## What I’m working on
 
-- agents and agentic workflows for real user tasks
+- Applicaiton of agents and agentic workflows for real user tasks
 - LLM application patterns, evaluation, and reliability
-- vibe coding workflows for faster product iteration
-- business ideas that can work in production, not just demos
+- Vibe coding workflows for faster product iteration
+- Product/features that can work in production, not just demos
 
 ## Selected work
 
