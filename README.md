@@ -7,7 +7,6 @@ I share notes and builds on my [personal site](https://YOUR-LINK).
 ## What I’m working on
 
 - agents and agentic workflows for real user tasks
-- RAG systems with better retrieval quality and grounding
 - LLM application patterns, evaluation, and reliability
 - vibe coding workflows for faster product iteration
 - business ideas that can work in production, not just demos
