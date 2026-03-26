@@ -4,7 +4,7 @@ I’m a product manager currently building AI-powered products that turn messy s
 
 My work focuses on designing end-to-end product systems; from problem definition to retrieval, ranking, and evaluation, using AI where it meaningfully improves product outcomes.  
 
-I share notes and builds on my [personal site](https://jobpostdiscovery.vercel.app/home?view=post-feed).
+I share notes and builds on my [personal site](https://tanmaykakati.vercel.app/).
 
 ## What I’m working on
 
