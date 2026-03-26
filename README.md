@@ -2,7 +2,7 @@
 
 I build AI-native systems that turn messy signals into clear, actionable decisions.
 
-I share notes and builds on my [personal site](https://YOUR-LINK).
+I share notes and builds on my [personal site]([https://YOUR-LINK](https://tanmaykakati.vercel.app/)).
 
 ## What I’m working on
 
