@@ -1,48 +1,23 @@
 # Hi, I'm Tanmay Kakati
 
-I build AI-native tools that turn messy, real-world signals into something usable.
+I build AI-native systems that turn messy signals into clear, actionable decisions.
 
-Right now, I’m exploring how people actually discover opportunities, make decisions, and take action — and where software can make that faster, clearer, and less frustrating.
-
----
+I share notes and builds on my [personal site](https://YOUR-LINK).
 
 ## What I’m working on
 
-- extracting hiring signals from noisy, unstructured posts  
-- building ranking systems that feel intuitive, not black-box  
-- designing interfaces that help people decide, not just browse  
-- shipping end-to-end systems from idea → working product  
-
----
+- agents and agentic workflows for real user tasks
+- RAG systems with better retrieval quality and grounding
+- LLM application patterns, evaluation, and reliability
+- vibe coding workflows for faster product iteration
+- business ideas that can work in production, not just demos
 
 ## Selected work
 
-- **HireFeed**  
-  Agentic job-post search focused on real hiring posts, not listings  
-
-- **Zillow Listing and Lead Optimization**  
-  Tradeoff-aware system for improving listing performance and lead quality  
-
----
-
-## Writing and thinking
-
-I write about product systems, AI workflows, and decision design.
-
-→ [Personal Website](https://YOUR-LINK)
-
----
+- [HireFeed](https://github.com/tkakati/job-post-search) - Agentic job-post search focused on hiring posts instead of listings.
+- [Zillow Listing and Lead Optimization](https://github.com/tkakati/zillow_listing_and_lead_optimization) - Tradeoff-aware system for improving listing performance and lead quality.
 
 ## How I think
 
-- most useful data is unstructured and ignored  
-- good products reduce decision friction, not just surface options  
-- AI should clarify and act, not just generate  
-- simple systems that work > complex systems that impress  
-
----
-
-## Contact
-
-- LinkedIn: add your profile link  
-- Location: Seattle, WA
+- Products should reduce decision friction, not just surface more options.
+- Simple systems that work consistently beat complex systems that impress once.
